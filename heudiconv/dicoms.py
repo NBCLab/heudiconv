@@ -77,7 +77,7 @@ def group_dicoms_into_seqinfos(files, file_filter, dcmfilter, grouping):
 
         try:
             series_id = (int(mw.dcm_data.SeriesNumber),
-                         mw.dcm_data.ProtocolName)
+                         mw.dcm_data.SeriesDescription)
             file_studyUID = mw.dcm_data.StudyInstanceUID
 
             if not per_studyUID:
@@ -97,14 +97,14 @@ def group_dicoms_into_seqinfos(files, file_filter, dcmfilter, grouping):
 
         if not series_id[0] < 0:
             if dcmfilter is not None and dcmfilter(mw.dcm_data):
-                series_id = (-1, mw.dcm_data.ProtocolName)
+                series_id = (-1, mw.dcm_data.SeriesDescription)
 
         # filter out unwanted non-image-data DICOMs by assigning
         # a series number < 0 (see test below)
         if not series_id[0] < 0 and mw.dcm_data[0x0008, 0x0016].repval in (
                 'Raw Data Storage',
                 'GrayscaleSoftcopyPresentationStateStorage'):
-            series_id = (-1, mw.dcm_data.ProtocolName)
+            series_id = (-1, mw.dcm_data.SeriesDescription)
 
         if per_studyUID:
             series_id = series_id + (file_studyUID,)
@@ -119,7 +119,7 @@ def group_dicoms_into_seqinfos(files, file_filter, dcmfilter, grouping):
                 ingrp = True
                 if series_id[0] >= 0:
                     series_id = (mwgroup[idx].dcm_data.SeriesNumber,
-                                 mwgroup[idx].dcm_data.ProtocolName)
+                                 mwgroup[idx].dcm_data.SeriesDescription)
                     if per_studyUID:
                         series_id = series_id + (file_studyUID,)
                 groups[0].append(series_id)
@@ -205,7 +205,7 @@ def group_dicoms_into_seqinfos(files, file_filter, dcmfilter, grouping):
             '-', '-',
             size[0], size[1], size[2], size[3],
             TR, TE,
-            dcminfo.ProtocolName,
+            dcminfo.SeriesDescription,
             motion_corrected,
             'derived' in [x.lower() for x in dcminfo.get('ImageType', [])],
             dcminfo.get('PatientID'),
@@ -235,7 +235,7 @@ def group_dicoms_into_seqinfos(files, file_filter, dcmfilter, grouping):
             key,
             info.series_id,
             dcminfo.SeriesDescription,
-            dcminfo.ProtocolName,
+            dcminfo.SeriesDescription,
             info.is_derived,
             len(dcminfo.get('ReferencedImageSequence', '')),
             len(dcminfo.get('SourceImageSequence', '')),
