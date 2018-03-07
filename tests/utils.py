@@ -1,17 +1,12 @@
-import hashlib
 import os.path as op
-import heudiconv
+import heudiconv.heuristics
 
-def md5sum(filename):
-    with open(filename, 'rb') as f:
-        return hashlib.md5(f.read()).hexdigest()
+HEURISTICS_PATH = op.join(heudiconv.heuristics.__path__[0])
+TESTS_DATA_PATH = op.join(op.dirname(__file__), 'data')
 
 
 def gen_heudiconv_args(datadir, outdir, subject, heuristic_file, xargs=None):
-    heuristic = op.realpath(op.join(op.dirname(heudiconv.__file__),
-                                    '..',
-                                    'heuristics',
-                                    heuristic_file))
+    heuristic = op.realpath(op.join(HEURISTICS_PATH, heuristic_file))
     args = ["-d", op.join(datadir, 'sourcedata/{subject}/*/*/*.tgz'),
             "-c", "dcm2niix",
             "-o", outdir,

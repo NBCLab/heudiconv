@@ -10,8 +10,7 @@ import csv
 from random import sample
 from glob import glob
 
-import dicom as dcm
-import dcmstack as ds
+from heudiconv.external.pydicom import dcm
 
 from .parser import find_files
 from .utils import (
@@ -61,10 +60,10 @@ def populate_bids_templates(path, defaults={}):
     create_file_if_missing(op.join(path, 'CHANGES'),
         "0.0.1  Initial data acquired\n"
         "TODOs:\n\t- verify and possibly extend information in participants.tsv"
-        "(see for example http://datasets.datalad.org/?dir=/openfmri/ds000208)"
-        "\n\t- fill out dataset_description.json, README, sourcedata/README "
-        "(if present)\n\t- provide _events.tsv file for each _bold.nii.gz with "
-        "onsets of events (see  '8.5 Task events'  of BIDS specification)")
+        " (see for example http://datasets.datalad.org/?dir=/openfmri/ds000208)"
+        "\n\t- fill out dataset_description.json, README, sourcedata/README"
+        " (if present)\n\t- provide _events.tsv file for each _bold.nii.gz with"
+        " onsets of events (see  '8.5 Task events'  of BIDS specification)")
     create_file_if_missing(op.join(path, 'README'),
         "TODO: Provide description for the dataset -- basic details about the "
         "study, possibly pointing to pre-registration (if public or embargoed)")
@@ -92,7 +91,7 @@ def populate_bids_templates(path, defaults={}):
         events_file = fpath[:-len(suf)] + '_events.tsv'
         lgr.debug("Generating %s", events_file)
         with open(events_file, 'w') as f:
-            f.write("onset\tduration\ttrial_type\tresponse_time\tTODO -- fill in rows and add more tab-separated columns if desired")
+            f.write("onset\tduration\ttrial_type\tresponse_time\tstim_file\tTODO -- fill in rows and add more tab-separated columns if desired")
     # extract tasks files stubs
     for task_acq, fields in tasks.items():
         task_file = op.join(path, task_acq + '_bold.json')
@@ -123,8 +122,7 @@ def tuneup_bids_json_files(json_files):
             # Let's hope no word 'Date' comes within a study name or smth like
             # that
             raise ValueError("There must be no dates in .json sidecar")
-        #json.dump(json_, open(jsonfile, 'w'), indent=2)
-        save_json(jsonfile, json_, indent=2) # ensure this does same as above
+        save_json(jsonfile, json_, indent=2)
 
     # Load the beast
     seqtype = op.basename(op.dirname(jsonfile))
@@ -163,7 +161,7 @@ def add_participant_record(studydir, subject, age, sex):
     participant_id = 'sub-%s' % subject
 
     if not create_file_if_missing(participants_tsv,
-            '\t'.join(['participant_id', 'age', 'sex', 'group']) + '\n'):
+           '\t'.join(['participant_id', 'age', 'sex', 'group']) + '\n'):
         # check if may be subject record already exists
         with open(participants_tsv) as f:
             f.readline()
@@ -289,6 +287,7 @@ def get_formatted_scans_key_row(item):
 
     """
     dcm_fn = item[-1][0]
+    from heudiconv.external.dcmstack import ds
     mw = ds.wrapper_from_data(dcm.read_file(dcm_fn,
                                             stop_before_pixels=True,
                                             force=True))

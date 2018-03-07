@@ -7,6 +7,8 @@ from .. import __version__, __packagename__
 from ..parser import get_study_sessions
 from ..utils import load_heuristic, anonymize_sid, treat_infofile, SeqInfo
 from ..convert import prep_conversion
+from ..bids import populate_bids_templates, tuneup_bids_json_files
+from ..queue import queue_conversion
 
 import inspect
 import logging
@@ -36,7 +38,7 @@ def setup_exceptionhook():
             # print()
             pdb.post_mortem(tb)
         else:
-            lgr.warn(
+            lgr.warning(
               "We cannot setup exception hook since not in interactive mode")
 
     sys.excepthook = _pdb_excepthook
@@ -54,17 +56,17 @@ def process_extra_commands(outdir, args):
     args : Namespace
         arguments
     """
-    if args.command == 'treat-json':
+    if args.command == 'treat-jsons':
         for f in args.files:
             treat_infofile(f)
     elif args.command == 'ls':
-        heuristic = load_heuristic(op.realpath(args.heuristic_file))
+        heuristic = load_heuristic(args.heuristic)
         heuristic_ls = getattr(heuristic, 'ls', None)
         for f in args.files:
             study_sessions = get_study_sessions(
                 args.dicom_dir_template, [f], heuristic, outdir,
                 args.session, args.subjs, grouping=args.grouping)
-            # print(f)
+            print(f)
             for study_session, sequences in study_sessions.items():
                 suf = ''
                 if heuristic_ls:
@@ -74,11 +76,21 @@ def process_extra_commands(outdir, args):
                     % (str(study_session), len(sequences), suf)
                 )
     elif args.command == 'populate-templates':
-        heuristic = load_heuristic(op.realpath(args.heuristic_file))
+        heuristic = load_heuristic(args.heuristic)
         for f in args.files:
             populate_bids_templates(f, getattr(heuristic, 'DEFAULT_FIELDS', {}))
     elif args.command == 'sanitize-jsons':
         tuneup_bids_json_files(args.files)
+    elif args.command == 'heuristics':
+        from ..utils import get_known_heuristics_with_descriptions
+        for name_desc in get_known_heuristics_with_descriptions().items():
+            print("- %s: %s" % name_desc)
+    elif args.command == 'heuristic-info':
+        from ..utils import get_heuristic_description, get_known_heuristic_names
+        if not args.heuristic:
+            raise ValueError("Specify heuristic using -f. Known are: %s"
+                             % ', '.join(get_known_heuristic_names()))
+        print(get_heuristic_description(args.heuristic, full=True))
     else:
         raise ValueError("Unknown command %s", args.command)
     return
@@ -87,11 +99,20 @@ def process_extra_commands(outdir, args):
 def main(argv=None):
     parser = get_parser()
     args = parser.parse_args(argv)
+    # To be done asap so anything random is deterministic
+    if args.random_seed is not None:
+        import random
+        random.seed(args.random_seed)
+        import numpy
+        numpy.random.seed(args.random_seed)
     if args.debug:
         lgr.setLevel(logging.DEBUG)
-
-    if args.files and args.subjs:
-        raise ValueError("Unable to processes `--subjects` with files")
+    # Should be possible but only with a single subject -- will be used to
+    # override subject deduced from the DICOMs
+    if args.files and args.subjs and len(args.subjs) > 1:
+        raise ValueError(
+            "Unable to processes multiple `--subjects` with files"
+        )
 
     if args.debug:
         setup_exceptionhook()
@@ -106,28 +127,35 @@ def get_parser():
     parser.add_argument('--version', action='version', version=__version__)
     group = parser.add_mutually_exclusive_group()
     group.add_argument('-d', '--dicom_dir_template', dest='dicom_dir_template',
-                        help='location of dicomdir that can be indexed with '
-                        'subject id {subject} and session {session}. Tarballs '
-                        '(can be compressed) are supported in addition to '
-                        'directory. All matching tarballs for a subject are '
-                        'extracted and their content processed in a single pass')
+                       help='location of dicomdir that can be indexed with '
+                       'subject id {subject} and session {session}. Tarballs '
+                       '(can be compressed) are supported in addition to '
+                       'directory. All matching tarballs for a subject are '
+                       'extracted and their content processed in a single pass')
     group.add_argument('--files', nargs='*',
-                        help='Files (tarballs, dicoms) or directories '
-                        'containing files to process. Cannot be provided if '
-                        'using --dicom_dir_template or --subjects')
+                       help='Files (tarballs, dicoms) or directories '
+                       'containing files to process. Cannot be provided if '
+                       'using --dicom_dir_template or --subjects')
     parser.add_argument('-s', '--subjects', dest='subjs', type=str, nargs='*',
                         help='list of subjects - required for dicom template. '
                         'If not provided, DICOMS would first be "sorted" and '
                         'subject IDs deduced by the heuristic')
-    parser.add_argument('-c', '--converter', default='dcm2niix',
+    parser.add_argument('-c', '--converter',
+                        default='dcm2niix',
                         choices=('dcm2niix', 'none'),
-                        help='tool to use for dicom conversion. Setting to '
+                        help='tool to use for DICOM conversion. Setting to '
                         '"none" disables the actual conversion step -- useful'
                         'for testing heuristics.')
     parser.add_argument('-o', '--outdir', default=os.getcwd(),
                         help='output directory for conversion setup (for '
                         'further customization and future reference. This '
                         'directory will refer to non-anonymized subject IDs')
+    parser.add_argument('-l', '--locator', default=None,
+                        help='study path under outdir.  If provided, '
+                        'it overloads the value provided by the heuristic. '
+                        'If --datalad is enabled, every directory within '
+                        'locator becomes a super-dataset thus establishing a '
+                        'hierarchy. Setting to "unknown" will skip that dataset')
     parser.add_argument('-a', '--conv-outdir', default=None,
                         help='output directory for converted files. By default '
                         'this is identical to --outdir. This option is most '
@@ -137,9 +165,11 @@ def get_parser():
                         'DICOMs to anonymized IDs. Such command must take a '
                         'single argument and return a single anonymized ID. '
                         'Also see --conv-outdir')
-    parser.add_argument('-f', '--heuristic', dest='heuristic_file',
-                        required=True,
-                        help='python script containing heuristic')
+    parser.add_argument('-f', '--heuristic', dest='heuristic',
+                        # some commands might not need heuristic
+                        # required=True,
+                        help='Name of a known heuristic or path to the Python'
+                             'script containing heuristic')
     parser.add_argument('-p', '--with-prov', action='store_true',
                         help='Store additional provenance information. '
                         'Requires python-rdflib.')
@@ -149,7 +179,7 @@ def get_parser():
     parser.add_argument('-b', '--bids', action='store_true',
                         help='flag for output into BIDS structure')
     parser.add_argument('--overwrite', action='store_true', default=False,
-                        help='flag to allow overwrite existing files')
+                        help='flag to allow overwriting existing converted files')
     parser.add_argument('--datalad', action='store_true',
                         help='Store the entire collection as DataLad '
                         'dataset(s). Small files will be committed directly to '
@@ -162,7 +192,11 @@ def get_parser():
                         help='Do not catch exceptions and show exception '
                         'traceback')
     parser.add_argument('--command',
-                        choices=('treat-json', 'ls', 'populate-templates'),
+                        choices=(
+                            'heuristics', 'heuristic-info',
+                            'ls', 'populate-templates',
+                            'sanitize-jsons', 'treat-jsons',
+                        ),
                         help='custom actions to be performed on provided '
                         'files instead of regular operation.')
     parser.add_argument('-g', '--grouping', default='studyUID',
@@ -171,7 +205,8 @@ def get_parser():
     parser.add_argument('--minmeta', action='store_true',
                         help='Exclude dcmstack meta information in sidecar '
                         'jsons')
-
+    parser.add_argument('--random-seed', type=int, default=None,
+                        help='Random seed to initialize RNG')
     submission = parser.add_argument_group('Conversion submission options')
     submission.add_argument('-q', '--queue', default=None,
                             help='select batch system to submit jobs to instead'
@@ -189,19 +224,20 @@ def process_args(args):
     # pre-process provided list of files and possibly sort into groups/sessions
     # Group files per each study/sid/session
 
-    lgr.info(INIT_MSG(packname=__packagename__,
-                      version=__version__))
-
     outdir = op.abspath(args.outdir)
 
     if args.command:
         process_extra_commands(outdir, args)
         return
 
+    lgr.info(INIT_MSG(packname=__packagename__,
+                      version=__version__))
+
+
     #
     # Load heuristic -- better do it asap to make sure it loads correctly
     #
-    heuristic = load_heuristic(op.realpath(args.heuristic_file))
+    heuristic = load_heuristic(args.heuristic)
 
     study_sessions = get_study_sessions(args.dicom_dir_template, args.files,
                                         heuristic, outdir, args.session,
@@ -215,6 +251,11 @@ def process_args(args):
 
     for (locator, session, sid), files_or_seqinfo in study_sessions.items():
 
+        # Allow for session to be overloaded from command line
+        if args.session is not None:
+            session = args.session
+        if args.locator is not None:
+            locator = args.locator
         if not len(files_or_seqinfo):
             raise ValueError("nothing to process?")
         # that is how life is ATM :-/ since we don't do sorting if subj
@@ -250,7 +291,7 @@ def process_args(args):
                              sid,
                              args.anon_cmd,
                              args.converter,
-                             args.session,
+                             session,
                              args.with_prov,
                              args.bids)
             continue
@@ -269,10 +310,10 @@ def process_args(args):
             from ..external.dlad import prepare_datalad
             dlad_sid = sid if not anon_sid else anon_sid
             dl_msg = prepare_datalad(anon_study_outdir, anon_outdir, dlad_sid,
-                                     args.session, seqinfo, dicoms, args.bids)
+                                     session, seqinfo, dicoms, args.bids)
 
         lgr.info("PROCESSING STARTS: {0}".format(
-            str(dict(subject=sid, outdir=study_outdir, session=args.session))))
+            str(dict(subject=sid, outdir=study_outdir, session=session))))
 
         prep_conversion(sid,
                         dicoms,
@@ -282,7 +323,7 @@ def process_args(args):
                         anon_sid=anon_sid,
                         anon_outdir=anon_study_outdir,
                         with_prov=args.with_prov,
-                        ses=args.session,
+                        ses=session,
                         bids=args.bids,
                         seqinfo=seqinfo,
                         min_meta=args.minmeta,

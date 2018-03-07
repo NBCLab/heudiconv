@@ -1,5 +1,5 @@
 """Utility objects and functions"""
-
+import hashlib
 import os
 import tempfile
 import json
@@ -7,12 +7,15 @@ import re
 import sys
 import shutil
 import copy
-import logging
 import stat
 import os.path as op
 from pathlib import Path
 from collections import namedtuple
 from glob import glob
+
+import logging
+lgr = logging.getLogger(__name__)
+
 
 seqinfo_fields = [
     'total_files_till_now',  # 0
@@ -117,28 +120,6 @@ def create_file_if_missing(filename, content):
     return True
 
 
-def mark_sensitive(ds, path_glob=None):
-    """
-
-    Parameters
-    ----------
-    ds : Dataset to operate on
-    path_glob : str, optional
-      glob of the paths within dataset to work on
-    Returns
-    -------
-    None
-    """
-    sens_kwargs = dict(
-        init=[('distribution-restrictions', 'sensitive')]
-    )
-    if path_glob:
-        paths = glob(op.join(ds.path, path_glob))
-        if not paths:
-            return
-        sens_kwargs['path'] = paths
-    ds.metadata(recursive=True, **sens_kwargs)
-
 def read_config(infile):
     with open(infile, 'rt') as fp:
         info = eval(fp.read())
@@ -183,6 +164,12 @@ def load_json(filename):
     return data
 
 
+def assure_no_file_exists(path):
+    """Check if file or symlink (git-annex?) exists, and if so -- remove"""
+    if os.path.lexists(path):
+        os.unlink(path)
+
+
 def save_json(filename, data, indent=4):
     """Save data to a json file
 
@@ -194,6 +181,7 @@ def save_json(filename, data, indent=4):
         Dictionary to save in json file.
 
     """
+    assure_no_file_exists(filename)
     with open(filename, 'w') as fp:
         fp.write(_canonical_dumps(data, sort_keys=True, indent=indent))
 
@@ -215,9 +203,16 @@ def json_dumps_pretty(j, indent=2, sort_keys=True):
     js_ = re.sub('  *("?[-+.0-9e]+"?)[ \n]*', r' \1', js_)
     # no spaces after [
     js_ = re.sub('\[ ', '[', js_)
-    j_ = json.loads(js_)
-    # Removed assert as it does not do any floating point comparison
-    #assert(j == j_)
+    # the load from the original dump and reload from tuned up
+    # version should result in identical values since no value
+    # must be changed, just formatting.
+    j_just_reloaded = json.loads(js)
+    j_tuned = json.loads(js_)
+
+    assert j_just_reloaded == j_tuned, \
+       "Values differed when they should have not. "\
+       "Report to the heudiconv developers"
+
     return js_
 
 
@@ -257,22 +252,76 @@ def slim_down_info(j):
     return j
 
 
-def load_heuristic(heuristic_file):
+def get_known_heuristic_names():
+    """Return a list of heuristic names present under heudiconv/heuristics"""
+    import heudiconv.heuristics
+    candidates = {
+        op.splitext(op.basename(x))[0]
+        for hp in heudiconv.heuristics.__path__
+        for x in glob(op.join(hp, '*.py')) + glob(op.join(hp, '*.py[co]'))
+    }
+    return sorted(
+        filter(
+            lambda c: not (c.startswith('test_') or c.startswith('_')),
+            candidates
+        )
+    )
+
+
+def load_heuristic(heuristic):
     """Load heuristic from the file, return the module
     """
-    path, fname = op.split(heuristic_file)
-    sys.path.append(path)
-    mod = __import__(fname.split('.')[0])
-    mod.filename = heuristic_file
+    if os.path.sep in heuristic or os.path.lexists(heuristic):
+        heuristic_file = op.realpath(heuristic)
+        path, fname = op.split(heuristic_file)
+        try:
+            old_syspath = sys.path[:]
+            sys.path.append(path)
+            mod = __import__(fname.split('.')[0])
+            mod.filename = heuristic_file
+        finally:
+            sys.path = old_syspath
+    else:
+        from importlib import import_module
+        try:
+            mod = import_module('heudiconv.heuristics.%s' % heuristic)
+            mod.filename = mod.__file__.rstrip('co')  # remove c or o from pyc/pyo
+        except Exception as exc:
+            raise ImportError(
+                "Failed to import heuristic %s: %s"
+                % (heuristic, exc)
+            )
     return mod
 
 
-def safe_copyfile(src, dest):
+def get_heuristic_description(name, full=False):
+    try:
+        mod = load_heuristic(name)
+        desc = (getattr(mod, '__doc__', '') or '').strip()
+        return desc.split(os.linesep)[0] if not full else desc
+    except Exception as exc:
+        return "Failed to load: %s" % exc
+
+
+def get_known_heuristics_with_descriptions():
+    from collections import OrderedDict
+    heuristics = OrderedDict()
+    for name in get_known_heuristic_names():
+        heuristics[name] = get_heuristic_description(name, full=False)
+    return heuristics
+
+
+def safe_copyfile(src, dest, overwrite=False):
     """Copy file but blow if destination name already exists
     """
     if op.isdir(dest):
         dest = op.join(dest, op.basename(src))
     if op.lexists(dest):
+        if not overwrite:
+            raise RuntimeError(
+                "was asked to copy %s but destination already exists: %s"
+                % (src, dest)
+            )
         os.unlink(dest)
     shutil.copyfile(src, dest)
 
@@ -333,3 +382,8 @@ def clear_temp_dicoms(item_dicoms):
         and op.exists(str(tmp))):
         # clean up directory holding dicoms
         shutil.rmtree(str(tmp))
+
+
+def file_md5sum(filename):
+    with open(filename, 'rb') as f:
+        return hashlib.md5(f.read()).hexdigest()

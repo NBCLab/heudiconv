@@ -1,6 +1,7 @@
 from heudiconv.cli.run import main as runner
 
 import os
+import os.path as op
 from mock import patch
 from six.moves import StringIO
 
@@ -10,6 +11,10 @@ import csv
 import re
 
 import pytest
+from .utils import TESTS_DATA_PATH
+
+import logging
+lgr = logging.getLogger(__name__)
 
 try:
     from datalad.api import Dataset
@@ -18,35 +23,46 @@ except ImportError:  # pragma: no cover
 
 
 # this will fail if not in project's root directory
-def test_smoke_converall(tmpdir):
+def test_smoke_convertall(tmpdir):
     runner(
-        ("-f heuristics/convertall.py -c dcm2niix -o %s -b --datalad "
-         "-s fmap_acq-3mm -d tests/data/{subject}/*" % tmpdir).split(' ')
+        ("-f convertall -c dcm2niix -o %s -b --datalad "
+         "-s fmap_acq-3mm -d %s/{subject}/*"
+         % (tmpdir, TESTS_DATA_PATH)
+        ).split(' ')
     )
 
 
-@pytest.mark.parametrize('heuristic', [ 'dbic_bids', 'convertall' ])
+@pytest.mark.parametrize('heuristic', ['reproin', 'convertall'])
 @pytest.mark.parametrize(
     'invocation', [
-        "--files tests/data",    # our new way with automated groupping
-        "-d tests/data/{subject}/* -s 01-fmap_acq-3mm" # "old" way specifying subject
+        "--files %s" % TESTS_DATA_PATH,    # our new way with automated groupping
+        "-d %s/{subject}/* -s 01-fmap_acq-3mm" % TESTS_DATA_PATH # "old" way specifying subject
         # should produce the same results
     ])
 @pytest.mark.skipif(Dataset is None, reason="no datalad")
-def test_dbic_bids_largely_smoke(tmpdir, heuristic, invocation):
-    is_bids = True if heuristic == 'dbic_bids' else False
-    arg = "-f heuristics/%s.py -c dcm2niix -o %s" % (heuristic, tmpdir)
+def test_reproin_largely_smoke(tmpdir, heuristic, invocation):
+    is_bids = True if heuristic == 'reproin' else False
+    arg = "--random-seed 1 -f %s -c dcm2niix -o %s" \
+          % (heuristic, tmpdir)
     if is_bids:
         arg += " -b"
     arg += " --datalad "
     args = (
         arg + invocation
     ).split(' ')
-    if heuristic != 'dbic_bids' and invocation == '--files tests/data':
-        # none other heuristic has mighty infotoids atm
-        with pytest.raises(NotImplementedError):
-            runner(args)
-        return
+
+    # Test some safeguards
+    if invocation == "--files %s" % TESTS_DATA_PATH:
+        # Multiple subjects must not be specified -- only a single one could
+        # be overridden from the command line
+        with pytest.raises(ValueError):
+            runner(args + ['--subjects', 'sub1', 'sub2'])
+
+        if heuristic != 'reproin':
+            # none other heuristic has mighty infotoids atm
+            with pytest.raises(NotImplementedError):
+                runner(args)
+            return
     runner(args)
     ds = Dataset(str(tmpdir))
     assert ds.is_installed()
@@ -54,15 +70,13 @@ def test_dbic_bids_largely_smoke(tmpdir, heuristic, invocation):
     head = ds.repo.get_hexsha()
 
     # and if we rerun -- should fail
-    if heuristic != 'dbic_bids' and invocation != '--files tests/data':
-        # those guys -- they just plow through it ATM without failing, i.e.
-        # the logic is to reprocess
+    lgr.info(
+        "RERUNNING, expecting to FAIL since the same everything "
+        "and -c specified so we did conversion already"
+    )
+    with pytest.raises(RuntimeError):
         runner(args)
 
-    # don't raise error by rerun...
-    # else:
-        # with pytest.raises(RuntimeError):
-        #     runner(args)
     # but there should be nothing new
     assert not ds.repo.dirty
     assert head == ds.repo.get_hexsha()
@@ -78,14 +92,14 @@ def test_dbic_bids_largely_smoke(tmpdir, heuristic, invocation):
 
 @pytest.mark.parametrize(
     'invocation', [
-        "--files tests/data",    # our new way with automated groupping
+        "--files %s" % TESTS_DATA_PATH,    # our new way with automated groupping
     ])
-def test_scans_keys_dbic_bids(tmpdir, invocation):
-    args = "-f heuristics/dbic_bids.py -c dcm2niix -o %s -b " % tmpdir
+def test_scans_keys_reproin(tmpdir, invocation):
+    args = "-f reproin -c dcm2niix -o %s -b " % (tmpdir)
     args += invocation
     runner(args.split())
     # for now check it exists
-    scans_keys = glob(pjoin(tmpdir.strpath, '*/*/*/*/*.tsv'))
+    scans_keys = glob(pjoin(tmpdir.strpath, '*/*/*/*/*/*.tsv'))
     assert(len(scans_keys) == 1)
     with open(scans_keys[0]) as f:
         reader = csv.reader(f, delimiter='\t')
@@ -102,8 +116,31 @@ def test_scans_keys_dbic_bids(tmpdir, invocation):
 
 @patch('sys.stdout', new_callable=StringIO)
 def test_ls(stdout):
-    args = "-f heuristics/dbic_bids.py --command ls --files tests/data".split(' ')
+    args = (
+            "-f reproin --command ls --files %s"
+            % (TESTS_DATA_PATH)
+    ).split(' ')
     runner(args)
     out = stdout.getvalue()
     assert 'StudySessionInfo(locator=' in out
     assert 'Halchenko/Yarik/950_bids_test4' in out
+
+
+def test_scout_conversion(tmpdir):
+    tmppath = tmpdir.strpath
+    args = (
+        "-b -f reproin --files %s"
+        % (TESTS_DATA_PATH)
+    ).split(' ') + ['-o', tmppath]
+    runner(args)
+
+    assert not op.exists(pjoin(
+        tmppath,
+        'Halchenko/Yarik/950_bids_test4/sub-phantom1sid1/ses-localizer/anat'))
+
+    assert op.exists(pjoin(
+        tmppath,
+        'Halchenko/Yarik/950_bids_test4/sourcedata/sub-phantom1sid1/'
+        'ses-localizer/anat/sub-phantom1sid1_ses-localizer_scout.dicom.tgz'
+    )
+    )

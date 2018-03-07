@@ -1,15 +1,19 @@
 import os
 import os.path as op
 import logging
+from glob import glob
+from os import path as op
 
-from ..utils import create_file_if_missing, mark_sensitive
+from ..utils import create_file_if_missing
 
 lgr = logging.getLogger(__name__)
 
 MIN_VERSION = '0.7'
 
+
 def prepare_datalad(studydir, outdir, sid, session, seqinfo, dicoms, bids):
     """ Prepare data for datalad """
+    from datalad.api import Dataset
     datalad_msg_suf = ' %s' % sid
     if session:
         datalad_msg_suf += ", session %s" % session
@@ -17,13 +21,13 @@ def prepare_datalad(studydir, outdir, sid, session, seqinfo, dicoms, bids):
         datalad_msg_suf += ", %d sequences" % len(seqinfo)
     datalad_msg_suf += ", %d dicoms" % (len(sum(seqinfo.values(), []))
                                         if seqinfo else len(dicoms))
-    from datalad.api import Dataset
     ds = Dataset(studydir)
     if not op.exists(outdir) or not ds.is_installed():
         add_to_datalad(outdir, studydir,
                        msg="Preparing for %s" % datalad_msg_suf,
                        bids=bids)
     return datalad_msg_suf
+
 
 def add_to_datalad(topdir, studydir, msg, bids):
     """Do all necessary preparations (if were not done before) and save
@@ -33,7 +37,7 @@ def add_to_datalad(topdir, studydir, msg, bids):
     from datalad.support.annexrepo import AnnexRepo
     from datalad.support.external_versions import external_versions
     assert external_versions['datalad'] >= MIN_VERSION, (
-      "Need datalad >= {}".format(MIN_VERSION)) # add to reqs
+      "Need datalad >= {}".format(MIN_VERSION))  # add to reqs
 
     studyrelpath = op.relpath(studydir, topdir)
     assert not studyrelpath.startswith(op.pardir)  # so we are under
@@ -51,7 +55,7 @@ def add_to_datalad(topdir, studydir, msg, bids):
             ds_ = create(curdir_, dataset=superds,
                          force=True,
                          no_annex=True,
-                         shared_access='all',
+                         # shared_access='all',
                          annex_version=6)
             assert ds == ds_
         assert ds.is_installed()
@@ -94,8 +98,9 @@ def add_to_datalad(topdir, studydir, msg, bids):
                             "yet provided", ds)
             else:
                 dsh = ds.create(path='.heudiconv',
-                                force=True,
-                                shared_access='all')
+                                force=True
+                                # shared_access='all'
+                                )
         # Since .heudiconv could contain sensitive information
         # we place all files under annex and then add
         if create_file_if_missing(op.join(dsh_path, '.gitattributes'),
@@ -132,3 +137,25 @@ def add_to_datalad(topdir, studydir, msg, bids):
       http://git-annex.branchable.com/tips/automatically_adding_metadata/
     - possibly even make separate sub-datasets for originaldata, derivatives ?
     """
+
+
+def mark_sensitive(ds, path_glob):
+    """
+
+    Parameters
+    ----------
+    ds : Dataset to operate on
+    path_glob : str
+      glob of the paths within dataset to work on
+
+    Returns
+    -------
+    None
+    """
+    paths = glob(op.join(ds.path, path_glob))
+    if not paths:
+        return
+    ds.repo.set_metadata(
+        paths,
+        init=[('distribution-restrictions', 'sensitive')],
+        recursive=True)
