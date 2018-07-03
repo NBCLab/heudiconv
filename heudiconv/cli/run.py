@@ -272,6 +272,8 @@ def process_args(args):
             lgr.warning("Skipping unknown locator dataset")
             continue
 
+        study_outdir = op.join(outdir, locator or '')
+
         if args.queue:
             if seqinfo and not dicoms:
                 # flatten them all and provide into batching, which again
@@ -300,7 +302,6 @@ def process_args(args):
         if args.anon_cmd:
             lgr.info('Anonymized {} to {}'.format(sid, anon_sid))
 
-        study_outdir = op.join(outdir, locator or '')
         anon_outdir = args.conv_outdir or outdir
         anon_study_outdir = op.join(anon_outdir, locator or '')
 
